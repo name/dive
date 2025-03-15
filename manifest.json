@@ -1,0 +1,10 @@
+{
+	"id": "dive",
+	"name": "Dive",
+	"version": "0.0.1",
+	"minAppVersion": "0.15.0",
+	"description": "Chat with your notes using AI and seamlessly reference files with @mentions.",
+	"author": "cunjur",
+	"authorUrl": "https://char.blog",
+	"isDesktopOnly": true
+}
