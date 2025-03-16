@@ -16,6 +16,7 @@
   max-width: 100%;
   font-size: 14px;
   line-height: 1.6;
+  position: relative;
 }
 
 /* Fix for user message paragraphs to match AI message padding */
@@ -48,7 +49,7 @@
 .message-content pre {
   margin: 0.8em 0;
   padding: 0.8em;
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: #283649;
   border-radius: 4px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -60,7 +61,7 @@
   font-size: 0.9em;
   padding: 0.2em 0.4em;
   border-radius: 3px;
-  background-color: rgba(0, 0, 0, 0.2);
+  background-color: #283649;
   white-space: pre-wrap;
 }
 
@@ -614,4 +615,263 @@ h4:after {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Container styles */
+.dive-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* Animation styles */
+.fade-in-content {
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-in-content.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Optimize transitions */
+.toggle-button {
+  transition: opacity 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+/* Reduce paint operations */
+.dive-chat-container {
+  contain: content;
+}
+
+/* Improved code block styling */
+.message-content pre {
+  background-color: #283649 !important;
+  /* Darker background for better contrast */
+  border-radius: 6px;
+  margin: 0.8em 0;
+  padding: 1em;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  position: relative;
+  counter-reset: line;
+}
+
+/* Ensure code blocks in AI messages have good contrast */
+.ai-message .message-content pre {
+  background-color: #283649 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Add a subtle border to separate code from chat bubble */
+.message-content pre::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: linear-gradient(to bottom, #4a8bfc, #38a3a5);
+  border-radius: 3px 0 0 3px;
+}
+
+.message-content pre>code {
+  display: block;
+  position: relative;
+  padding-left: 0.8em;
+}
+
+/* Improve inline code styling */
+.message-content code:not(pre code) {
+  background-color: #283649 !important;
+  color: #e0e0e0;
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+}
+
+/* Syntax highlighting improvements */
+.message-content .token.comment,
+.message-content .token.prolog,
+.message-content .token.doctype,
+.message-content .token.cdata {
+  color: #8a8a8a;
+}
+
+.message-content .token.punctuation {
+  color: #e0e0e0;
+}
+
+.message-content .token.property,
+.message-content .token.tag,
+.message-content .token.boolean,
+.message-content .token.number,
+.message-content .token.constant,
+.message-content .token.symbol {
+  color: #fc9;
+}
+
+.message-content .token.selector,
+.message-content .token.attr-name,
+.message-content .token.string,
+.message-content .token.char,
+.message-content .token.builtin {
+  color: #a5d6ff;
+}
+
+.message-content .token.operator,
+.message-content .token.entity,
+.message-content .token.url,
+.message-content .language-css .token.string,
+.message-content .style .token.string {
+  color: #f08d49;
+}
+
+.message-content .token.keyword {
+  color: #cc99cd;
+}
+
+.message-content .token.function {
+  color: #79b6f2;
+}
+
+/* Make sure all content is selectable */
+.message-content {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* Ensure code blocks are selectable */
+.message-content pre,
+.message-content code {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* Add a subtle selection style */
+.message-content ::selection {
+  background-color: rgba(74, 139, 252, 0.3);
+}
+
+/* Add copy feedback */
+.copy-feedback {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  padding: 8px 16px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 1000;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.2s, transform 0.2s;
+}
+
+.copy-feedback.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Conversation status styles */
+.conversation-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: var(--background-modifier-border);
+}
+
+.awaiting-response {
+  background-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.thinking-indicator {
+  display: inline-block;
+  margin-left: 4px;
+}
+
+.thinking-dot {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background-color: currentColor;
+  margin: 0 2px;
+  animation: thinking-bounce 1.4s infinite;
+}
+
+@keyframes thinking-bounce {
+
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.7;
+  }
+
+  30% {
+    transform: translateY(-6px);
+    opacity: 1;
+  }
+}
+
+/* Settings textarea styling */
+.setting-item:nth-child(2) textarea {
+  width: 100%;
+  height: 200px;
+  min-height: 150px;
+  font-family: monospace;
+}
+
+/* Conversation separator */
+.conversation-separator {
+  text-align: center;
+  margin: 16px 0;
+  position: relative;
+}
+
+.conversation-separator::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background-color: var(--background-modifier-border);
+}
+
+.conversation-separator span {
+  position: relative;
+  background-color: var(--background-primary);
+  padding: 0 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Add styles for the confirmation modal */
+.dive-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.dive-modal-buttons button {
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.dive-modal-buttons button.mod-warning {
+  background-color: var(--text-error);
+  color: white;
 }

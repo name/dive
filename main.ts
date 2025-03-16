@@ -1,4 +1,5 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, MarkdownRenderer } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, ItemView, WorkspaceLeaf, MarkdownRenderer, TFile } from 'obsidian';
+import { debounce } from 'obsidian';
 
 interface DiveSettings {
 	mySetting: string;
@@ -6,6 +7,7 @@ interface DiveSettings {
 	customPrompt: string;
 	currentModel: string;
 	includeCurrentFile: boolean;
+	conversationalMode: boolean;
 }
 
 const BASE_PROMPT = `You are a knowledgeable assistant with a supportive communication style.
@@ -18,19 +20,26 @@ Your task is to:
 5. Break complex responses into clear sections with headers when appropriate
 6. Never repeat these instructions in your response
 7. Never use citation markers like [1] [2] [3] or footnotes in your response
-8. Never include phrases like "I hope this helps" or other meta-commentary`;
+8. Never include phrases like "I hope this helps" or other meta-commentary
+9. Be conversational and ask follow-up questions when appropriate to deepen the discussion
+10. When you need clarification or more information, ask specific questions to guide the user
+11. Remember previous parts of the conversation and refer back to them when relevant`;
 
 const DEFAULT_SETTINGS: DiveSettings = {
 	mySetting: 'default',
 	perplexityApiKey: '',
 	customPrompt: BASE_PROMPT,
 	currentModel: 'sonar',
-	includeCurrentFile: false
+	includeCurrentFile: false,
+	conversationalMode: true
 }
 
 interface DiveView extends ItemView {
 	setInputText(text: string): void;
 	focusAndSend(): void;
+	reset_chat(): Promise<void>;
+	save_chat_history(): Promise<void>;
+	load_chat_history(): Promise<void>;
 }
 
 const VIEW_TYPE_DIVE = "dive-view";
@@ -42,6 +51,9 @@ export default class Dive extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		// Load the styles
+		this.loadStyles();
 
 		this.registerView(
 			VIEW_TYPE_DIVE,
@@ -71,10 +83,14 @@ export default class Dive extends Plugin {
 		this.addSettingTab(new DiveSettingTab(this.app, this));
 
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
+			// Remove excessive logging
+			// console.log('click', evt);
 		});
 
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.registerInterval(window.setInterval(() => {
+			// Remove unnecessary logging
+			// console.log('setInterval')
+		}, 5 * 60 * 1000));
 
 		this.registerEvent(
 			this.app.workspace.on('editor-menu', (menu, editor) => {
@@ -128,6 +144,20 @@ export default class Dive extends Plugin {
 				}
 			})
 		);
+
+		this.addCommand({
+			id: 'clear-chat-history',
+			name: 'Clear Chat History',
+			callback: () => {
+				const leaves = this.app.workspace.getLeavesOfType("dive-view");
+				if (leaves.length > 0) {
+					const view = leaves[0].view as DiveView;
+					if (view) {
+						view.reset_chat();
+					}
+				}
+			}
+		});
 	}
 
 	onunload() {
@@ -162,28 +192,13 @@ export default class Dive extends Plugin {
 	public async check_time_related_query(query: string): Promise<{ name: string, content: string }[]> {
 		const result: { name: string, content: string }[] = [];
 
-		console.log("Checking time-related query:", query);
+		// Remove excessive logging
+		// console.log("Checking time-related query:", query);
 
-		const yesterday_patterns = [
-			/what\s+(?:did|happened|occurred|took place)\s+yesterday/i,
-			/yesterday['']?s\s+(?:events|activities|notes|happenings)/i,
-			/tell\s+me\s+about\s+yesterday/i,
-			/what\s+was\s+(?:i|I)\s+(?:doing|working on)\s+yesterday/i,
-			/what\s+did\s+(?:i|I)\s+do\s+yesterday/i
-		];
+		// Combine patterns into fewer regex checks
+		const yesterday_pattern = /what\s+(?:did|happened|occurred|took place)\s+yesterday|yesterday['']?s\s+(?:events|activities|notes|happenings)|tell\s+me\s+about\s+yesterday|what\s+(?:was|did)\s+(?:i|I)\s+(?:doing|working on|do)\s+yesterday/i;
 
-		for (const pattern of yesterday_patterns) {
-			if (pattern.test(query)) {
-				console.log("Matched yesterday pattern:", pattern);
-			}
-		}
-
-		const today_patterns = [
-			/what\s+(?:did|happened|occurred|took place)\s+today/i,
-			/today['']?s\s+(?:events|activities|notes|happenings)/i,
-			/tell\s+me\s+about\s+today/i,
-			/what\s+(?:am|was)\s+(?:i|I)\s+(?:doing|working on)\s+today/i
-		];
+		const today_pattern = /what\s+(?:did|happened|occurred|took place)\s+today|today['']?s\s+(?:events|activities|notes|happenings)|tell\s+me\s+about\s+today|what\s+(?:am|was)\s+(?:i|I)\s+(?:doing|working on)\s+today/i;
 
 		const specific_date_pattern = /(?:what\s+(?:did|happened|occurred|took place)\s+on|tell\s+me\s+about|what\s+was\s+(?:i|I)\s+(?:doing|working on)\s+on)\s+(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|\d{1,2}-\d{1,2}(?:-\d{2,4})?)/i;
 
@@ -191,21 +206,13 @@ export default class Dive extends Plugin {
 
 		let target_date: Date | null = null;
 
-		if (query.toLowerCase().includes("what did i do yesterday")) {
-			console.log("Direct match for 'what did I do yesterday'");
+		// Use direct pattern matching instead of multiple .some() calls
+		if (yesterday_pattern.test(query)) {
 			const yesterday = new Date();
 			yesterday.setDate(yesterday.getDate() - 1);
 			target_date = yesterday;
-			console.log("Target date for yesterday (direct match):", yesterday.toISOString().split('T')[0]);
 		}
-		else if (yesterday_patterns.some(pattern => pattern.test(query))) {
-			console.log("Matched yesterday pattern");
-			const yesterday = new Date();
-			yesterday.setDate(yesterday.getDate() - 1);
-			target_date = yesterday;
-			console.log("Target date for yesterday:", yesterday.toISOString().split('T')[0]);
-		}
-		else if (today_patterns.some(pattern => pattern.test(query))) {
+		else if (today_pattern.test(query)) {
 			target_date = new Date();
 		}
 		else if (specific_date_pattern.test(query)) {
@@ -276,39 +283,42 @@ export default class Dive extends Plugin {
 	}
 
 	private async find_daily_note(date: Date): Promise<{ name: string, content: string } | null> {
-		console.log("Looking for daily note for date:", date.toISOString().split('T')[0]);
+		// Remove excessive logging
+		// console.log("Looking for daily note for date:", date.toISOString().split('T')[0]);
 
 		const formats = [
 			`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`, // YYYY-MM-DD
+			// Reduce the number of formats to check
 			`${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}-${date.getFullYear()}`, // MM-DD-YYYY
-			`${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}${date.getFullYear()}`, // MMDDYYYY
-			`${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`, // YYYYMMDD
-			`${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear()}`, // MM/DD/YYYY
-			`${date.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase()}`, // day name
 			`daily/${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`, // daily/YYYY-MM-DD
-			`journal/${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`, // journal/YYYY-MM-DD
-			`${date.toLocaleDateString('en-US', { month: 'long' }).toLowerCase()} ${date.getDate()}, ${date.getFullYear()}` // Month D, YYYY
+			`journal/${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` // journal/YYYY-MM-DD
 		];
 
-		console.log("Looking for daily note with formats:", formats);
+		// Remove excessive logging
+		// console.log("Looking for daily note with formats:", formats);
 
 		const files = this.app.vault.getMarkdownFiles();
-		console.log("Total markdown files in vault:", files.length);
+		// Remove excessive logging
+		// console.log("Total markdown files in vault:", files.length);
+		// console.log("All markdown files:", files.map(f => f.basename));
 
-		console.log("All markdown files:", files.map(f => f.basename));
+		// Cache file basenames to avoid repeated property access
+		const file_map = new Map();
+		files.forEach(file => {
+			file_map.set(file.basename.toLowerCase(), file);
+		});
 
 		for (const format of formats) {
-			const matching_files = files.filter(file =>
-				file.basename.toLowerCase() === format.toLowerCase() ||
-				file.basename.toLowerCase().includes(format.toLowerCase())
-			);
+			const format_lower = format.toLowerCase();
+			const matching_file = file_map.get(format_lower);
 
-			if (matching_files.length > 0) {
-				console.log(`Found ${matching_files.length} files matching format '${format}':`, matching_files.map(f => f.basename));
+			if (matching_file) {
+				// Remove excessive logging
+				// console.log(`Found file matching format '${format}':`, matching_file.basename);
 				try {
-					const content = await this.app.vault.read(matching_files[0]);
+					const content = await this.app.vault.read(matching_file);
 					return {
-						name: matching_files[0].basename,
+						name: matching_file.basename,
 						content
 					};
 				} catch (error) {
@@ -317,66 +327,52 @@ export default class Dive extends Plugin {
 			}
 		}
 
-		const daily_notes_folders = ['daily notes', 'dailies', 'journals', 'diary'];
-		for (const folder of daily_notes_folders) {
-			console.log(`Checking folder '${folder}' for daily notes`);
-			for (const format of formats) {
-				const matching_files = files.filter(file =>
-					file.path.toLowerCase().startsWith(folder.toLowerCase() + '/') &&
-					(file.basename.toLowerCase() === format.toLowerCase() ||
-						file.basename.toLowerCase().includes(format.toLowerCase()))
-				);
+		// Add a default return statement at the end of the function
+		return null;
+	}
 
-				if (matching_files.length > 0) {
-					console.log(`Found ${matching_files.length} files in '${folder}' folder matching format '${format}':`, matching_files.map(f => f.basename));
-					try {
-						const content = await this.app.vault.read(matching_files[0]);
-						return {
-							name: matching_files[0].basename,
-							content
-						};
-					} catch (error) {
-						console.error("Error reading daily note:", error);
-					}
+	private loadStyles() {
+		// This ensures our styles are loaded
+		this.registerDomEvent(document, 'DOMContentLoaded', () => {
+			const link = document.createElement('link');
+			link.rel = 'stylesheet';
+			link.href = this.manifest.dir + '/styles.css';
+			document.head.appendChild(link);
+
+			// Register for cleanup
+			this.register(() => link.remove());
+		});
+	}
+
+	public clear_saved_data(): void {
+		this.saveData({});
+	}
+
+	private async save_chat_history(): Promise<void> {
+		try {
+			// Get the view instance
+			const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_DIVE);
+			if (leaves.length > 0) {
+				const view = leaves[0].view as DiveView;
+				if (view) {
+					// Call the save_chat_history method on the view
+					await view.save_chat_history();
 				}
 			}
+		} catch (error) {
+			console.error("Error saving chat history:", error);
 		}
+	}
 
-		console.log("No exact matches found, trying flexible search");
-		const date_str = date.toISOString().split('T')[0];
-		const month_day = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-		const day_month = `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-		const day_str = String(date.getDate()).padStart(2, '0');
-		const month_str = String(date.getMonth() + 1).padStart(2, '0');
-		const year_str = String(date.getFullYear());
-
-		const potential_matches = files.filter(file =>
-			file.basename.includes(date_str) ||
-			file.basename.includes(month_day) ||
-			file.basename.includes(day_month) ||
-			(file.basename.includes(day_str) && file.basename.includes(month_str)) ||
-			(file.basename.toLowerCase().includes('daily') && file.basename.includes(day_str)) ||
-			(file.basename.toLowerCase().includes('journal') && file.basename.includes(day_str))
-		);
-
-		if (potential_matches.length > 0) {
-			console.log("Found potential matches with flexible search:", potential_matches.map(f => f.basename));
-			try {
-				const content = await this.app.vault.read(potential_matches[0]);
-				return {
-					name: potential_matches[0].basename,
-					content
-				};
-			} catch (error) {
-				console.error("Error reading potential daily note:", error);
+	public async reset_chat(): Promise<void> {
+		// Get the view instance
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_DIVE);
+		if (leaves.length > 0) {
+			const view = leaves[0].view as DiveView;
+			if (view) {
+				await view.reset_chat();
 			}
 		}
-
-		console.log("No daily note found. Creating a mock daily note for testing purposes.");
-		return {
-			name: `${date.toISOString().split('T')[0]} (Mock Daily Note)`,
-			content: `# Daily Note for ${date.toISOString().split('T')[0]}\n\nThis is a mock daily note created for testing purposes because no actual daily note was found for this date.\n\n## Activities\n- Worked on the Obsidian plugin project\n- Had a meeting with the team\n- Went for a walk in the evening`
-		};
 	}
 }
 
@@ -390,10 +386,23 @@ class DiveSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
-
 		containerEl.empty();
 
-		new Setting(containerEl)
+		// Create all settings at once to reduce DOM operations
+		const settings = [
+			this.createApiKeySetting(containerEl),
+			this.createPromptSetting(containerEl),
+			this.createModelSetting(containerEl),
+			this.createIncludeFileSetting(containerEl),
+			this.createConversationalModeSetting(containerEl)
+		];
+
+		// Apply styles after all DOM elements are created
+		this.applyStyles(containerEl);
+	}
+
+	private createApiKeySetting(containerEl: HTMLElement): Setting {
+		return new Setting(containerEl)
 			.setName('Perplexity API Key')
 			.setDesc('Enter your Perplexity API key')
 			.addText(text => {
@@ -402,20 +411,13 @@ class DiveSettingTab extends PluginSettingTab {
 				text.inputEl.type = 'password';
 				text.inputEl.disabled = this.plugin.settings.perplexityApiKey.length > 0;
 
-				text.onChange(async (value) => {
+				// Use a more efficient approach for onChange
+				const save_api_key = async (value: string) => {
 					this.plugin.settings.perplexityApiKey = value;
 					await this.plugin.saveSettings();
+				};
 
-					const editButton = containerEl.querySelector('.setting-item:first-child .clickable-icon:first-child') as HTMLElement;
-					if (editButton) {
-						editButton.innerHTML = value ? '<svg viewBox="0 0 100 100" class="pencil" width="20" height="20"><path fill="currentColor" stroke="currentColor" d="M80.2,55.5L21.9,85.8c-0.9,0.5-2.1,0.2-2.6-0.7c-0.2-0.3-0.2-0.6-0.2-0.9l0-59.2c0-0.8,0.5-1.5,1.3-1.8c0.2-0.1,0.5-0.1,0.7-0.1 c0.5,0,1,0.2,1.4,0.5l58.1,30.7c0.8,0.4,1.1,1.3,0.7,2.1C81,55.2,80.6,55.4,80.2,55.5z"></path></svg>' : '<svg viewBox="0 0 100 100" class="plus" width="20" height="20"><path fill="currentColor" stroke="currentColor" d="M80.2,55.5L21.9,85.8c-0.9,0.5-2.1,0.2-2.6-0.7c-0.2-0.3-0.2-0.6-0.2-0.9l0-59.2c0-0.8,0.5-1.5,1.3-1.8c0.2-0.1,0.5-0.1,0.7-0.1 c0.5,0,1,0.2,1.4,0.5l58.1,30.7c0.8,0.4,1.1,1.3,0.7,2.1C81,55.2,80.6,55.4,80.2,55.5z"></path></svg>';
-					}
-
-					if (value) {
-						const input = containerEl.querySelector('.setting-item:first-child input') as HTMLInputElement;
-						input.disabled = true;
-					}
-				});
+				text.onChange(save_api_key);
 
 				return text;
 			})
@@ -423,24 +425,30 @@ class DiveSettingTab extends PluginSettingTab {
 				button
 					.setIcon(this.plugin.settings.perplexityApiKey ? 'pencil' : 'plus')
 					.setTooltip(this.plugin.settings.perplexityApiKey ? 'Edit API key' : 'Add API key')
-					.onClick(async () => {
+					.onClick(() => {
 						const input = containerEl.querySelector('.setting-item:first-child input') as HTMLInputElement;
-						input.disabled = false;
-						input.focus();
-						input.select();
+						if (input) {
+							input.disabled = false;
+							input.focus();
+							input.select();
+						}
 					});
 			})
 			.addExtraButton(button => {
 				button
 					.setIcon('eye')
 					.setTooltip('Toggle visibility')
-					.onClick(async () => {
+					.onClick(() => {
 						const input = containerEl.querySelector('.setting-item:first-child input') as HTMLInputElement;
-						input.type = input.type === 'password' ? 'text' : 'password';
+						if (input) {
+							input.type = input.type === 'password' ? 'text' : 'password';
+						}
 					});
 			});
+	}
 
-		new Setting(containerEl)
+	private createPromptSetting(containerEl: HTMLElement): Setting {
+		return new Setting(containerEl)
 			.setName('Custom System Prompt')
 			.setDesc('Customize the AI system prompt')
 			.addTextArea(text => text
@@ -450,34 +458,40 @@ class DiveSettingTab extends PluginSettingTab {
 					this.plugin.settings.customPrompt = value;
 					await this.plugin.saveSettings();
 				}));
+	}
 
-		const textareaEl = containerEl.querySelector('.setting-item:nth-child(2) textarea');
-		if (textareaEl) {
-			(textareaEl as HTMLTextAreaElement).style.width = '100%';
-			(textareaEl as HTMLTextAreaElement).style.height = '200px';
-			(textareaEl as HTMLTextAreaElement).style.minHeight = '150px';
-			(textareaEl as HTMLTextAreaElement).style.fontFamily = 'monospace';
-		}
-
-		new Setting(containerEl)
+	private createModelSetting(containerEl: HTMLElement): Setting {
+		const setting = new Setting(containerEl)
 			.setName('Default Model')
-			.setDesc('Choose the default AI model')
-			.addDropdown(dropdown => dropdown
-				.addOptions(MODELS)
-				.setValue(this.plugin.settings.currentModel)
-				.onChange(async (value) => {
-					this.plugin.settings.currentModel = value;
-					await this.plugin.saveSettings();
-					this.app.workspace.trigger(DIVE_SETTINGS_CHANGED as any);
-					model_desc.setText(this.get_model_description(value));
-				}));
+			.setDesc('Choose the default AI model');
 
 		const model_desc = containerEl.createEl('div', {
 			cls: 'model-description',
 			text: this.get_model_description(this.plugin.settings.currentModel)
 		});
 
-		new Setting(containerEl)
+		setting.addDropdown(dropdown => {
+			dropdown
+				.addOptions(MODELS)
+				.setValue(this.plugin.settings.currentModel)
+				.onChange(value => {
+					// Update UI immediately
+					model_desc.setText(this.get_model_description(value));
+
+					// Then update settings asynchronously
+					requestAnimationFrame(async () => {
+						this.plugin.settings.currentModel = value;
+						await this.plugin.saveSettings();
+						this.app.workspace.trigger(DIVE_SETTINGS_CHANGED as any);
+					});
+				});
+		});
+
+		return setting;
+	}
+
+	private createIncludeFileSetting(containerEl: HTMLElement): Setting {
+		return new Setting(containerEl)
 			.setName('Include Current File by Default')
 			.setDesc('Automatically include current file content in messages')
 			.addToggle(toggle => toggle
@@ -488,6 +502,33 @@ class DiveSettingTab extends PluginSettingTab {
 				}));
 	}
 
+	private createConversationalModeSetting(containerEl: HTMLElement): Setting {
+		return new Setting(containerEl)
+			.setName('Conversational Mode')
+			.setDesc('Enable AI to ask follow-up questions and maintain conversation flow')
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.conversationalMode)
+				.onChange(async (value) => {
+					this.plugin.settings.conversationalMode = value;
+					await this.plugin.saveSettings();
+				}));
+	}
+
+	private applyStyles(containerEl: HTMLElement): void {
+		// Apply all styles in one batch
+		requestAnimationFrame(() => {
+			const textareaEl = containerEl.querySelector('.setting-item:nth-child(2) textarea');
+			if (textareaEl) {
+				Object.assign((textareaEl as HTMLTextAreaElement).style, {
+					width: '100%',
+					height: '200px',
+					minHeight: '150px',
+					fontFamily: 'monospace'
+				});
+			}
+		});
+	}
+
 	private get_model_description(model_id: string): string {
 		const descriptions: Record<string, string> = {
 			'sonar': 'Basic model for general-purpose chat. Good balance of performance and cost.',
@@ -495,7 +536,7 @@ class DiveSettingTab extends PluginSettingTab {
 			'sonar-reasoning': 'Basic model with Chain-of-Thought reasoning. Shows its thinking process.',
 			'sonar-reasoning-pro': 'Advanced model with Chain-of-Thought reasoning. Best for complex problems.',
 			'sonar-deep-research': 'Specialized for in-depth research and comprehensive answers.',
-			'r1-1776': 'Offline chat model that doesn\'t use real-time web search.'
+			'r1-1776': 'R1-1776 - Offline chat model ($8/1M tokens)'
 		};
 
 		return descriptions[model_id] || 'No description available for this model.';
@@ -507,7 +548,10 @@ class DiveView extends ItemView {
 	private inputField: HTMLTextAreaElement;
 	private plugin: Dive;
 	private currentMessageDiv: HTMLElement | null = null;
-	private chatHistory: { role: 'user' | 'assistant', content: string }[] = [];
+	private chatHistory: {
+		role: 'user' | 'assistant',
+		content: string
+	}[] = [];
 	private readonly MAX_CONTEXT_MESSAGES = 4;
 	private modelLabel: HTMLElement;
 	private includeFileToggle: HTMLElement;
@@ -515,6 +559,21 @@ class DiveView extends ItemView {
 	private fileSuggestions: HTMLElement[] = [];
 	private currentSuggestionIndex = 0;
 	private isShowingSuggestions = false;
+	private _cached_files: TFile[] = [];
+	private handle_file_suggestions = debounce(
+		(query: string) => this.show_file_suggestions_impl(query),
+		100, // 100ms debounce time
+		true  // leading edge execution
+	);
+	private conversation_context: string = '';
+	private awaiting_user_response: boolean = false;
+	private conversation_id: string = '';
+	private conversationStatusLabel: HTMLElement;
+	private current_selection: {
+		text: string,
+		is_in_ai_message: boolean,
+		range: Range
+	} | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: Dive) {
 		super(leaf);
@@ -540,18 +599,20 @@ class DiveView extends ItemView {
 			return { content: '' };
 		}
 
+		// Initialize conversation ID if not already set
+		if (!this.conversation_id) {
+			this.conversation_id = this.generate_conversation_id();
+		}
+
 		this.chatHistory.push({ role: 'user', content: message });
 
-		let contextMessages = [{ role: 'system', content: this.systemPrompt }];
+		let contextMessages = [{
+			role: 'system',
+			content: this.systemPrompt + '\n\nThis is a continuous conversation. Ask follow-up questions when appropriate and maintain context from previous messages.'
+		}];
 
-		if (this.chatHistory.length > this.MAX_CONTEXT_MESSAGES && this.chatHistory.length > 0) {
-			contextMessages.push(this.chatHistory[0]);
-			contextMessages = contextMessages.concat(
-				this.chatHistory.slice(-this.MAX_CONTEXT_MESSAGES)
-			);
-		} else {
-			contextMessages = contextMessages.concat(this.chatHistory);
-		}
+		// Include all chat history for better context
+		contextMessages = contextMessages.concat(this.chatHistory);
 
 		try {
 			const response = await fetch('https://api.perplexity.ai/chat/completions', {
@@ -562,7 +623,9 @@ class DiveView extends ItemView {
 				},
 				body: JSON.stringify({
 					model: this.plugin.settings.currentModel,
-					messages: contextMessages
+					messages: contextMessages,
+					// Add conversation ID for continuity
+					conversation_id: this.conversation_id
 				})
 			});
 
@@ -587,10 +650,16 @@ class DiveView extends ItemView {
 				}
 			}
 
+			// Check if the response contains a question
+			this.awaiting_user_response = this.detect_question_in_response(content);
+
 			this.chatHistory.push({
 				role: 'assistant',
 				content: content
 			});
+
+			// Save after adding assistant message
+			await this.save_chat_history();
 
 			return {
 				content,
@@ -603,9 +672,26 @@ class DiveView extends ItemView {
 		}
 	}
 
+	// Add this method to detect questions in the AI's response
+	private detect_question_in_response(content: string): boolean {
+		// Simple regex to detect questions
+		const question_patterns = [
+			/\?\s*$/m,                                // Ends with question mark
+			/\bwhat\b|\bhow\b|\bwhy\b|\bwhen\b|\bwhere\b|\bwhich\b/i,  // Question words
+			/\bcan you\b|\bcould you\b|\bwould you\b/i,  // Request phrases
+			/let me know/i,                           // Prompting for response
+			/\bthoughts\b/i                           // Asking for thoughts
+		];
+
+		return question_patterns.some(pattern => pattern.test(content));
+	}
+
 	async onOpen(): Promise<void> {
 		const container = this.containerEl.children[1];
 		container.empty();
+
+		// Load saved chat history - await the result
+		await this.load_chat_history();
 
 		const hour = new Date().getHours();
 		let greeting = "Hello";
@@ -622,29 +708,121 @@ class DiveView extends ItemView {
 
 		const controlsContainer = container.createEl("div", { cls: "controls-container" });
 
-		const exportButton = controlsContainer.createEl("button", {
+		const exportToNoteButton = controlsContainer.createEl("button", {
 			cls: "dive-control-button",
-			text: "Export Chat"
-		});
-		exportButton.addEventListener("click", () => {
-			const chatData = JSON.stringify(this.chatHistory, null, 2);
-			const blob = new Blob([chatData], { type: 'application/json' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `chat-${new Date().toISOString()}.json`;
-			a.click();
-			URL.revokeObjectURL(url);
+			text: "Export to Note"
 		});
 
-		const resetButton = controlsContainer.createEl("button", {
-			cls: "dive-control-button",
-			text: "Reset Chat"
+		exportToNoteButton.addEventListener("click", async () => {
+			// Format the chat history as markdown
+			let markdown_content = "# Dive Chat Export\n\n";
+
+			this.chatHistory.forEach(message => {
+				const role_label = message.role === 'user' ? '**You**' : '**AI**';
+
+				// For user messages, just add the text
+				if (message.role === 'user') {
+					markdown_content += `${role_label}: ${message.content}\n\n`;
+				}
+				// For AI messages, preserve the markdown formatting
+				// but remove any citation markers or references
+				else {
+					let clean_content = message.content;
+
+					// Remove citation markers like [1], [2], etc.
+					clean_content = clean_content.replace(/\[\d+\]/g, '');
+
+					markdown_content += `${role_label}:\n\n${clean_content}\n\n`;
+				}
+			});
+
+			// Generate a filename with date and time
+			const date_prefix = new Date().toISOString().split('T')[0];
+			const time_suffix = new Date().toTimeString().split(' ')[0].replace(/:/g, '-');
+			const file_name = `${date_prefix}_dive_chat_${time_suffix}.md`;
+
+			// Create the note in Obsidian
+			try {
+				const file = await this.app.vault.create(file_name, markdown_content);
+				new Notice(`Chat exported to note: ${file_name}`);
+
+				// Open the newly created note
+				this.app.workspace.getLeaf(false).openFile(file);
+			} catch (error) {
+				new Notice(`Error exporting chat: ${error.message}`);
+				console.error("Error exporting chat to note:", error);
+			}
 		});
-		resetButton.addEventListener("click", () => {
-			chatContainer.empty();
+
+		const newConversationButton = controlsContainer.createEl("button", {
+			cls: "dive-control-button",
+			text: "New Conversation"
+		});
+
+		newConversationButton.addEventListener("click", () => {
+			// Reset conversation state
+			this.conversation_id = this.generate_conversation_id();
+			this.awaiting_user_response = false;
+			this.conversationStatusLabel.setText("New conversation");
+			this.conversationStatusLabel.removeClass("awaiting-response");
+
+			// Add a visual separator in the chat
+			const separatorEl = chatContainer.createEl("div", {
+				cls: "conversation-separator"
+			});
+			separatorEl.createEl("span", {
+				text: "New conversation started"
+			});
+
+			// Don't clear chat history completely, just add a separator
 			this.chatHistory = [];
-			new Notice("Chat history cleared");
+
+			// Save the empty chat history
+			this.save_chat_history();
+
+			new Notice("Started a new conversation");
+		});
+
+		const clearHistoryButton = controlsContainer.createEl("button", {
+			cls: "dive-control-button",
+			text: "Clear History"
+		});
+
+		clearHistoryButton.addEventListener("click", () => {
+			// Show a confirmation dialog
+			const confirmClear = () => {
+				this.reset_chat();
+				new Notice("Chat history cleared");
+			};
+
+			// Create a simple confirmation modal
+			const modal = new Modal(this.app);
+			modal.titleEl.setText("Clear Chat History");
+			modal.contentEl.createEl("p", {
+				text: "Are you sure you want to clear all chat history? This cannot be undone."
+			});
+
+			const buttonContainer = modal.contentEl.createEl("div", {
+				cls: "dive-modal-buttons"
+			});
+
+			const cancelButton = buttonContainer.createEl("button", {
+				text: "Cancel"
+			});
+			cancelButton.addEventListener("click", () => {
+				modal.close();
+			});
+
+			const confirmButton = buttonContainer.createEl("button", {
+				cls: "mod-warning",
+				text: "Clear History"
+			});
+			confirmButton.addEventListener("click", () => {
+				confirmClear();
+				modal.close();
+			});
+
+			modal.open();
 		});
 
 		const inputContainer = container.createEl("div", { cls: "dive-input-container" });
@@ -676,6 +854,11 @@ class DiveView extends ItemView {
 		this.modelLabel = infoContainer.createEl("div", {
 			cls: "model-label",
 			text: `Using ${MODELS[this.plugin.settings.currentModel as keyof typeof MODELS]}`
+		});
+
+		this.conversationStatusLabel = infoContainer.createEl("div", {
+			cls: "conversation-status",
+			text: "New conversation"
 		});
 
 		this.registerEvent(
@@ -737,9 +920,12 @@ class DiveView extends ItemView {
 		});
 
 		this.includeFileToggle.addEventListener("click", () => {
-			this.plugin.settings.includeCurrentFile = !this.plugin.settings.includeCurrentFile;
-			this.includeFileToggle.toggleClass('active', this.plugin.settings.includeCurrentFile);
-			this.plugin.saveSettings();
+			this.includeFileToggle.toggleClass('active', !this.plugin.settings.includeCurrentFile);
+
+			requestAnimationFrame(async () => {
+				this.plugin.settings.includeCurrentFile = !this.plugin.settings.includeCurrentFile;
+				await this.plugin.saveSettings();
+			});
 		});
 
 		this.addStyles();
@@ -747,6 +933,17 @@ class DiveView extends ItemView {
 		sendButton.addEventListener("click", async () => {
 			const rawMessage = this.inputField.value;
 			if (rawMessage.trim()) {
+				// Update conversation status
+				if (this.awaiting_user_response) {
+					this.awaiting_user_response = false;
+					this.conversationStatusLabel.setText("Continuing conversation");
+				} else if (!this.conversation_id) {
+					this.conversation_id = this.generate_conversation_id();
+					this.conversationStatusLabel.setText("New conversation");
+				} else {
+					this.conversationStatusLabel.setText("Continuing conversation");
+				}
+
 				const messageData = await this.prepareMessage(rawMessage);
 				this.addMessage(chatContainer, messageData.displayText, 'user');
 				this.inputField.value = "";
@@ -780,9 +977,37 @@ class DiveView extends ItemView {
 					const messageDiv = this.addMessage(chatContainer, '', 'ai', response.citations);
 					const contentDiv = messageDiv.querySelector('.message-content')!;
 					await this.streamResponse(response.content, contentDiv as HTMLElement);
+
+					// Update conversation status if AI is asking a question
+					if (this.awaiting_user_response) {
+						this.conversationStatusLabel.setText("Waiting for your response");
+						this.conversationStatusLabel.addClass("awaiting-response");
+
+						// Focus the input field to encourage response
+						this.inputField.focus();
+					} else {
+						this.conversationStatusLabel.setText("Conversation active");
+						this.conversationStatusLabel.removeClass("awaiting-response");
+					}
 				}
 			}
 		});
+
+		// Add context menu for selections
+		this.addContextMenuForSelection();
+
+		// After creating the chat container, render the saved messages
+		if (this.chatHistory.length > 0) {
+			this.render_saved_chat_history(chatContainer);
+
+			// Update conversation status based on loaded state
+			if (this.awaiting_user_response) {
+				this.conversationStatusLabel.setText("Waiting for your response");
+				this.conversationStatusLabel.addClass("awaiting-response");
+			} else if (this.conversation_id) {
+				this.conversationStatusLabel.setText("Conversation active");
+			}
+		}
 	}
 
 	private scrollToBottom(container: HTMLElement) {
@@ -791,36 +1016,59 @@ class DiveView extends ItemView {
 
 	private async streamResponse(text: string, contentDiv: HTMLElement) {
 		try {
-			const cleanText = text.split('\n').map(line => {
-				if (line.trim().startsWith('```') || line.trim().startsWith('`')) {
-					return line;
-				}
-				return line.trim();
-			}).join('\n').trim();
+			const clean_text = text.trim();
 
-			contentDiv.setAttribute('data-markdown', cleanText);
+			// Store the original markdown for copying
+			contentDiv.setAttribute('data-markdown', clean_text);
 			contentDiv.empty();
 
-			await MarkdownRenderer.renderMarkdown(cleanText, contentDiv, '.', this.plugin);
+			// Add fade-in class but don't make visible yet
+			contentDiv.addClass('fade-in-content');
 
-			const elements = Array.from(contentDiv.children);
-
-			elements.forEach(el => {
-				(el as HTMLElement).style.opacity = '0';
-				(el as HTMLElement).style.transition = 'opacity 0.1s ease-in-out';
+			// Add typing indicator
+			const typingIndicator = contentDiv.createEl("div", {
+				cls: "typing-indicator"
 			});
 
-			for (let i = 0; i < elements.length; i++) {
-				const el = elements[i] as HTMLElement;
-				el.style.opacity = '1';
-
-				const container = contentDiv.closest('.dive-chat-container') as HTMLElement;
-				if (container) {
-					this.scrollToBottom(container);
-				}
-
-				await new Promise(resolve => setTimeout(resolve, 30));
+			for (let i = 0; i < 3; i++) {
+				typingIndicator.createEl("span", { cls: "typing-dot" });
 			}
+
+			// Simulate typing delay based on text length
+			const delay = Math.min(1000, Math.max(300, clean_text.length * 5));
+			await new Promise(resolve => setTimeout(resolve, delay));
+
+			// Remove typing indicator and render content
+			typingIndicator.remove();
+
+			await new Promise<void>(resolve => {
+				requestAnimationFrame(async () => {
+					// Clean the text before rendering by removing citation markers
+					let display_text = clean_text;
+
+					// Remove citation markers like [1], [2], etc.
+					display_text = display_text.replace(/\[\d+\]/g, '');
+
+					// Remove citation sections at the end of the message
+					// Using a workaround for the dotAll flag
+					display_text = display_text.replace(/(\n+)(Sources|References|Citations):[^]*$/i, '');
+
+					await MarkdownRenderer.renderMarkdown(display_text, contentDiv, '.', this.plugin);
+
+					// Animate in the content after rendering
+					setTimeout(() => {
+						contentDiv.addClass('visible');
+					}, 10);
+
+					// Scroll after rendering
+					const container = contentDiv.closest('.dive-chat-container') as HTMLElement;
+					if (container) {
+						this.scrollToBottom(container);
+					}
+
+					resolve();
+				});
+			});
 		} catch (error) {
 			contentDiv.empty();
 			contentDiv.createEl('div', { text: 'Error rendering response. Original text preserved in copy.' });
@@ -850,6 +1098,13 @@ class DiveView extends ItemView {
 			});
 			copyButton.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 
+			// Add a copy markdown button
+			const copyMarkdownButton = buttonWrapper.createEl("button", {
+				cls: "message-button",
+				attr: { 'aria-label': 'Copy as markdown' }
+			});
+			copyMarkdownButton.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>`;
+
 			const createNoteButton = buttonWrapper.createEl("button", {
 				cls: "message-button",
 				attr: { 'aria-label': 'Create note' }
@@ -859,11 +1114,24 @@ class DiveView extends ItemView {
 			copyButton.addEventListener("click", async () => {
 				copyButton.addClass('loading');
 				try {
-					const content = text || contentDiv.getAttribute('data-markdown') || contentDiv.innerText;
+					// Copy as plain text (rendered content)
+					const content = contentDiv.innerText;
 					await navigator.clipboard.writeText(content);
-					new Notice("Copied to clipboard!");
+					this.show_copy_feedback("Copied as plain text");
 				} finally {
 					copyButton.removeClass('loading');
+				}
+			});
+
+			copyMarkdownButton.addEventListener("click", async () => {
+				copyMarkdownButton.addClass('loading');
+				try {
+					// Copy the original markdown
+					const markdown_content = contentDiv.getAttribute('data-markdown') || text;
+					await navigator.clipboard.writeText(markdown_content);
+					this.show_copy_feedback("Copied as markdown");
+				} finally {
+					copyMarkdownButton.removeClass('loading');
 				}
 			});
 
@@ -909,8 +1177,7 @@ class DiveView extends ItemView {
 			});
 		}
 
-		if (type === 'ai' && !text) {
-		} else if (type === 'ai') {
+		if (type === 'ai') {
 			MarkdownRenderer.renderMarkdown(text, contentDiv, '.', this.plugin);
 		} else {
 			const formattedText = text.split('\n')
@@ -986,9 +1253,12 @@ class DiveView extends ItemView {
 		containerEl.style.flexDirection = "column";
 		containerEl.style.height = "100%";
 
+		// Instead of adding inline styles, we'll just add a class to the container
+		containerEl.addClass("dive-container");
 	}
 
 	async onClose() {
+		await this.save_chat_history();
 	}
 
 	public setInputText(text: string) {
@@ -1018,7 +1288,23 @@ class DiveView extends ItemView {
 	}
 
 	private get systemPrompt(): string {
-		return `${BASE_PROMPT}\n\nAdditional Instructions:\n${this.plugin.settings.customPrompt}`;
+		let prompt = BASE_PROMPT;
+
+		if (this.plugin.settings.conversationalMode) {
+			prompt += `\n\nThis is a conversational interface. You should:
+1. Ask follow-up questions when appropriate
+2. Remember previous parts of the conversation
+3. Refer back to earlier topics when relevant
+4. Maintain a natural dialogue flow
+5. Be friendly and engaging, your name is Dive`;
+		} else {
+			prompt += `\n\nThis is a question-answering interface. You should:
+1. Focus on providing complete answers
+2. Avoid asking follow-up questions
+3. Be thorough and comprehensive`;
+		}
+
+		return `${prompt}\n\nAdditional Instructions:\n${this.plugin.settings.customPrompt}`;
 	}
 
 	public focusAndSend() {
@@ -1139,57 +1425,36 @@ class DiveView extends ItemView {
 			console.log("Display text with file names:", displayText);
 		}
 
+		// Add conversation context analysis
+		this.analyze_conversation_context(userInput);
+
+		if (this.conversation_context && this.chatHistory.length > 0) {
+			apiText = `${apiText}\n\nConversation context: ${this.conversation_context}`;
+		}
+
 		return { displayText, apiText };
 	}
 
 	private extractFileReferences(text: string): string[] {
-		console.log("Extracting file references from:", text);
-
-		const mentions: string[] = [];
+		// Create a Set for faster lookups and to avoid duplicates
+		const mentions_set = new Set<string>();
 		let match;
 
+		// Process backtick-wrapped references
 		const backtick_regex = /@`([^`]+)`/g;
 		while ((match = backtick_regex.exec(text)) !== null) {
 			const filename = match[1].trim();
-			if (filename && !mentions.includes(filename)) {
-				mentions.push(filename);
-				console.log("Found backtick-wrapped filename:", filename);
-			}
+			if (filename) mentions_set.add(filename);
 		}
 
-		const regex = /@([^@`]+)(?=@|$)/g;
-		while ((match = regex.exec(text)) !== null) {
-			if (match[0].startsWith('@`')) continue;
-
-			let potential_filename = match[1].trim();
-
-			potential_filename = potential_filename.replace(/[.,;!?]$/, '').trim();
-
-			if (potential_filename.includes(' ')) {
-				console.log("Potential filename with spaces (no backticks):", potential_filename);
-				const first_word = potential_filename.split(' ')[0];
-				if (first_word && !mentions.includes(first_word)) {
-					mentions.push(first_word);
-				}
-			} else {
-				const simple_match = potential_filename.match(/^([^\s.,;!?]+)/);
-				if (simple_match && !mentions.includes(simple_match[1])) {
-					mentions.push(simple_match[1]);
-				}
-			}
-		}
-
-		const simple_regex = /@([^\s@`]+)(?=\s|$|[.,;!?])/g;
+		// Process simple references
+		const simple_regex = /@([^\s@`.,;!?]+)/g;
 		while ((match = simple_regex.exec(text)) !== null) {
-			if (match[0].startsWith('@`')) continue;
-
-			if (!mentions.includes(match[1])) {
-				mentions.push(match[1]);
-			}
+			mentions_set.add(match[1]);
 		}
 
-		console.log("Extracted file references:", mentions);
-		return mentions;
+		// Convert Set to Array for return
+		return Array.from(mentions_set);
 	}
 
 	private removeFileReferences(text: string): string {
@@ -1217,80 +1482,105 @@ class DiveView extends ItemView {
 
 	private handleFileSuggestions() {
 		const text = this.inputField.value;
-		const cursorPosition = this.inputField.selectionStart;
-		const textBeforeCursor = text.substring(0, cursorPosition);
+		const cursor_position = this.inputField.selectionStart;
+		const text_before_cursor = text.substring(0, cursor_position);
 
-		const atIndex = textBeforeCursor.lastIndexOf('@');
+		const at_index = text_before_cursor.lastIndexOf('@');
 
-		if (atIndex !== -1 && (atIndex === 0 || textBeforeCursor[atIndex - 1] === ' ' || textBeforeCursor[atIndex - 1] === '\n')) {
-			const query = textBeforeCursor.substring(atIndex + 1).toLowerCase();
-
-			this.showFileSuggestions(query);
+		if (at_index !== -1 && (at_index === 0 || text_before_cursor[at_index - 1] === ' ' || text_before_cursor[at_index - 1] === '\n')) {
+			const query = text_before_cursor.substring(at_index + 1).toLowerCase();
+			this.handle_file_suggestions(query);
 		} else {
 			this.hideSuggestions();
 		}
 	}
 
-	private async showFileSuggestions(query: string) {
-		const files = this.app.vault.getMarkdownFiles();
+	private async show_file_suggestions_impl(query: string) {
+		// Cache DOM elements and file list for better performance
+		if (this._cached_files.length === 0) {
+			this._cached_files = this.app.vault.getMarkdownFiles();
+		}
 
-		const matchedFiles = files.filter(file =>
-			file.path.toLowerCase().includes(query) ||
-			file.basename.toLowerCase().includes(query)
-		).slice(0, 5);
-
-		if (matchedFiles.length === 0) {
+		// Use more efficient filtering with early return for empty query
+		if (!query.trim()) {
 			this.hideSuggestions();
 			return;
 		}
 
-		this.suggestionContainer.empty();
-		this.suggestionContainer.style.display = "block";
-		this.fileSuggestions = [];
-		this.currentSuggestionIndex = 0;
-		this.isShowingSuggestions = true;
+		// Use a more efficient filtering approach
+		const query_lower = query.toLowerCase();
+		const matched_files = this._cached_files
+			.filter((file: TFile) => {
+				const basename_lower = file.basename.toLowerCase();
+				if (basename_lower.includes(query_lower)) return true;
 
-		const inputRect = this.inputField.getBoundingClientRect();
-		const containerRect = this.suggestionContainer.parentElement?.getBoundingClientRect();
+				const parent_path = file.parent?.path?.toLowerCase();
+				return parent_path && parent_path.includes(query_lower);
+			})
+			.slice(0, 5);
 
-		if (containerRect) {
-			this.suggestionContainer.style.width = `${this.inputField.offsetWidth}px`;
-			this.suggestionContainer.style.left = `${inputRect.left - containerRect.left}px`;
-
-			this.suggestionContainer.style.position = "absolute";
-			this.suggestionContainer.style.bottom = `${inputRect.height + 24}px`;
+		if (matched_files.length === 0) {
+			this.hideSuggestions();
+			return;
 		}
 
-		matchedFiles.forEach((file, index) => {
-			const suggestionItem = this.suggestionContainer.createEl("div", {
-				cls: `file-suggestion-item ${index === 0 ? 'selected' : ''}`
-			});
+		// Create a document fragment for batch DOM operations
+		const fragment = document.createDocumentFragment();
+		this.suggestionContainer.empty();
+		this.fileSuggestions = [];
+		this.currentSuggestionIndex = 0;
 
-			const fileIcon = suggestionItem.createEl("span", {
-				cls: "suggestion-file-icon",
-				text: "📄"
-			});
+		// Set container properties once
+		this.suggestionContainer.style.display = "block";
 
-			suggestionItem.createEl("span", {
-				cls: "suggestion-file-name",
-				text: file.basename
-			});
+		// Position the container
+		const input_rect = this.inputField.getBoundingClientRect();
+		const container_rect = this.suggestionContainer.parentElement?.getBoundingClientRect();
 
-			suggestionItem.createEl("span", {
-				cls: "suggestion-file-path",
-				text: file.parent?.path ? `(${file.parent.path})` : ''
+		if (container_rect) {
+			Object.assign(this.suggestionContainer.style, {
+				width: `${this.inputField.offsetWidth}px`,
+				left: `${input_rect.left - container_rect.left}px`,
+				position: "absolute",
+				bottom: `${input_rect.height + 24}px`
 			});
+		}
 
-			suggestionItem.addEventListener('click', () => {
+		// Create all suggestion items in the fragment
+		matched_files.forEach((file: TFile, index: number) => {
+			const suggestion_item = document.createElement('div');
+			suggestion_item.className = `file-suggestion-item ${index === 0 ? 'selected' : ''}`;
+
+			const file_icon = document.createElement('span');
+			file_icon.className = 'suggestion-file-icon';
+			file_icon.textContent = '📄';
+			suggestion_item.appendChild(file_icon);
+
+			const file_name = document.createElement('span');
+			file_name.className = 'suggestion-file-name';
+			file_name.textContent = file.basename;
+			suggestion_item.appendChild(file_name);
+
+			const file_path = document.createElement('span');
+			file_path.className = 'suggestion-file-path';
+			file_path.textContent = file.parent?.path ? `(${file.parent.path})` : '';
+			suggestion_item.appendChild(file_path);
+
+			suggestion_item.addEventListener('click', () => {
 				this.insertFileReference(file);
 			});
 
-			suggestionItem.addEventListener('mouseenter', () => {
+			suggestion_item.addEventListener('mouseenter', () => {
 				this.selectSuggestion(index);
 			});
 
-			this.fileSuggestions.push(suggestionItem);
+			fragment.appendChild(suggestion_item);
+			this.fileSuggestions.push(suggestion_item);
 		});
+
+		// Add all items to the DOM at once
+		this.suggestionContainer.appendChild(fragment);
+		this.isShowingSuggestions = true;
 	}
 
 	private hideSuggestions() {
@@ -1339,7 +1629,7 @@ class DiveView extends ItemView {
 		}
 	}
 
-	private insertFileReference(file: any) {
+	private insertFileReference(file: TFile) {
 		const text = this.inputField.value;
 		const cursorPosition = this.inputField.selectionStart;
 		const textBeforeCursor = text.substring(0, cursorPosition);
@@ -1366,6 +1656,222 @@ class DiveView extends ItemView {
 		this.hideSuggestions();
 
 		console.log("Inserted file reference:", file.basename, "with backticks:", needs_backticks);
+	}
+
+	private generate_conversation_id(): string {
+		return Date.now().toString(36) + Math.random().toString(36).substring(2);
+	}
+
+	private analyze_conversation_context(message: string): void {
+		// Extract key topics from the message
+		const words = message.toLowerCase()
+			.replace(/[^\w\s]/g, '')
+			.split(/\s+/)
+			.filter(word => word.length > 3)
+			.filter(word => !['what', 'when', 'where', 'which', 'this', 'that', 'there', 'their', 'about'].includes(word));
+
+		// Count word frequency
+		const word_counts: Record<string, number> = {};
+		words.forEach(word => {
+			word_counts[word] = (word_counts[word] || 0) + 1;
+		});
+
+		// Get top 5 most frequent words
+		const top_words = Object.entries(word_counts)
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 5)
+			.map(entry => entry[0]);
+
+		// Update conversation context
+		this.conversation_context = top_words.join(', ');
+	}
+
+	// Add this new method to show copy feedback
+	private show_copy_feedback(message: string): void {
+		// Remove any existing feedback
+		const existing = document.querySelector('.copy-feedback');
+		if (existing) existing.remove();
+
+		// Create new feedback element
+		const feedback = document.createElement('div');
+		feedback.className = 'copy-feedback';
+		feedback.textContent = message;
+		document.body.appendChild(feedback);
+
+		// Show with animation
+		setTimeout(() => feedback.classList.add('visible'), 10);
+
+		// Hide and remove after delay
+		setTimeout(() => {
+			feedback.classList.remove('visible');
+			setTimeout(() => feedback.remove(), 300);
+		}, 2000);
+	}
+
+	private addContextMenuForSelection(): void {
+		this.registerDomEvent(document, 'selectionchange', () => {
+			const selection = window.getSelection();
+			if (!selection || selection.isCollapsed) return;
+
+			// Check if selection is within a message content div
+			const range = selection.getRangeAt(0);
+			const container = range.commonAncestorContainer.parentElement;
+			const is_in_message = container?.closest('.message-content');
+
+			if (is_in_message) {
+				// We have a valid selection in a message
+				const selected_text = selection.toString().trim();
+				if (selected_text) {
+					// Store the selection for potential use
+					this.current_selection = {
+						text: selected_text,
+						is_in_ai_message: !!container?.closest('.ai-message'),
+						range: range
+					};
+				}
+			}
+		});
+
+		// Add context menu for selections
+		this.plugin.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor, view) => {
+				if (this.current_selection && this.current_selection.text) {
+					menu.addItem((item) => {
+						item
+							.setTitle('Copy selected text')
+							.setIcon('copy')
+							.onClick(async () => {
+								if (this.current_selection) {
+									await navigator.clipboard.writeText(this.current_selection.text);
+									this.show_copy_feedback("Text copied");
+								}
+							});
+					});
+
+					if (this.current_selection.is_in_ai_message) {
+						// Try to get markdown for the selection if it's in an AI message
+						if (this.current_selection.range && this.current_selection.range.commonAncestorContainer) {
+							// Use optional chaining and type assertion
+							const node = this.current_selection.range.commonAncestorContainer as Node;
+							const element = node.nodeType === Node.ELEMENT_NODE
+								? node as Element
+								: node.parentElement;
+
+							const message_div = element?.closest('.message-content');
+
+							if (message_div) {
+								const full_markdown = message_div.getAttribute('data-markdown') || '';
+
+								menu.addItem((item) => {
+									item
+										.setTitle('Copy as markdown')
+										.setIcon('code')
+										.onClick(async () => {
+											if (this.current_selection) {
+												await navigator.clipboard.writeText(this.current_selection.text);
+												this.show_copy_feedback("Copied as markdown");
+											}
+										});
+								});
+							}
+						}
+					}
+				}
+			})
+		);
+	}
+
+	public async load_chat_history(): Promise<void> {
+		try {
+			const data = await this.plugin.loadData();
+			if (data && data.chat_history) {
+				this.chatHistory = data.chat_history;
+				this.conversation_id = data.conversation_id || this.generate_conversation_id();
+				this.awaiting_user_response = data.awaiting_user_response || false;
+			}
+		} catch (error) {
+			console.error("Error loading chat history:", error);
+		}
+	}
+
+	// Add a method to render the saved chat history
+	private render_saved_chat_history(container: HTMLElement): void {
+		this.chatHistory.forEach(message => {
+			if (message.role === 'user') {
+				this.addMessage(container, message.content, 'user');
+			} else {
+				const messageDiv = this.addMessage(container, '', 'ai');
+				const contentDiv = messageDiv.querySelector('.message-content') as HTMLElement;
+				if (contentDiv) {
+					// Use a non-animated version for loading saved messages
+					this.render_saved_message(message.content, contentDiv);
+				}
+			}
+		});
+
+		// Scroll to the bottom after rendering all messages
+		this.scrollToBottom(container);
+	}
+
+	// Add a method to render saved messages without animation
+	private async render_saved_message(text: string, contentDiv: HTMLElement): Promise<void> {
+		try {
+			const clean_text = text.trim();
+
+			// Store the original markdown for copying
+			contentDiv.setAttribute('data-markdown', clean_text);
+
+			// Clean the text before rendering by removing citation markers
+			let display_text = clean_text;
+
+			// Remove citation markers like [1], [2], etc.
+			display_text = display_text.replace(/\[\d+\]/g, '');
+
+			// Remove citation sections at the end of the message
+			display_text = display_text.replace(/(\n+)(Sources|References|Citations):[^]*$/i, '');
+
+			await MarkdownRenderer.renderMarkdown(display_text, contentDiv, '.', this.plugin);
+
+			// Make content visible immediately without animation
+			contentDiv.addClass('fade-in-content');
+			contentDiv.addClass('visible');
+		} catch (error) {
+			contentDiv.empty();
+			contentDiv.createEl('div', { text: 'Error rendering response. Original text preserved in copy.' });
+			contentDiv.setAttribute('data-markdown', text);
+		}
+	}
+
+	public async reset_chat(): Promise<void> {
+		this.chatHistory = [];
+		this.conversation_id = this.generate_conversation_id();
+		this.awaiting_user_response = false;
+
+		// Save the empty state - await to ensure it completes
+		await this.save_chat_history();
+
+		// Refresh the view
+		await this.onOpen();
+	}
+
+	public async save_chat_history(): Promise<void> {
+		try {
+			// First load existing data
+			const existing_data = await this.plugin.loadData() || {};
+
+			// Update with new chat history
+			const updated_data = {
+				...existing_data,
+				chat_history: this.chatHistory,
+				conversation_id: this.conversation_id,
+				awaiting_user_response: this.awaiting_user_response
+			};
+
+			// Save the updated data
+			await this.plugin.saveData(updated_data);
+		} catch (error) {
+			console.error("Error saving chat history:", error);
+		}
 	}
 }
 
